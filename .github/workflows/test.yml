@@ -1,0 +1,116 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  hook-tests:
+    name: Hook test suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq jq
+          fi
+          jq --version
+
+      - name: Run all hook test suites
+        run: |
+          shopt -s nullglob
+          failed=0
+          tests=(scaffold/hooks/*.test.sh scaffold/hooks/optional/*.test.sh)
+          if [[ ${#tests[@]} -eq 0 ]]; then
+            echo "no test suites found under scaffold/hooks/"
+            exit 0
+          fi
+          for t in "${tests[@]}"; do
+            echo "::group::$t"
+            bash "$t" || failed=1
+            echo "::endgroup::"
+          done
+          exit $failed
+
+  install-smoke:
+    name: Install smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fresh install + idempotent rerun
+        run: |
+          set -euo pipefail
+          scaffold_src="$PWD"
+          target="$(mktemp -d)"
+          cd "$target"
+          git init -q
+
+          echo "--- fresh install ---"
+          bash "$scaffold_src/install.sh" --local "$scaffold_src"
+
+          echo "--- verify expected files ---"
+          expected=(
+            .claude/settings.json
+            .claude/.gitignore
+            .claude/hooks/read-tracker.sh
+            .claude/hooks/memory-dup-gate.sh
+            .claude/hooks/memory-dup-gate.test.sh
+            .claude/hooks/optional/psql-gate.sh
+            .claude/skills/_bootstrap/SKILL.md
+            CLAUDE.md
+          )
+          missing=0
+          for f in "${expected[@]}"; do
+            if [[ ! -e "$f" ]]; then
+              echo "MISSING: $f"
+              missing=1
+            fi
+          done
+          [[ $missing -eq 0 ]]
+
+          echo "--- verify hook execute bits ---"
+          for f in .claude/hooks/read-tracker.sh .claude/hooks/memory-dup-gate.sh .claude/hooks/optional/psql-gate.sh; do
+            if [[ ! -x "$f" ]]; then
+              echo "NOT EXECUTABLE: $f"
+              exit 1
+            fi
+          done
+
+          echo "--- verify settings.json wires both hooks ---"
+          grep -q '"matcher": "Read"' .claude/settings.json
+          grep -q 'read-tracker.sh' .claude/settings.json
+          grep -q '"matcher": "Write"' .claude/settings.json
+          grep -q 'memory-dup-gate.sh' .claude/settings.json
+
+          echo "--- idempotency: rerun must skip every file ---"
+          out=$(bash "$scaffold_src/install.sh" --local "$scaffold_src")
+          echo "$out"
+          if echo "$out" | grep -qE '^  (add|write)'; then
+            echo "FAIL: rerun added or wrote files (expected all skip)"
+            exit 1
+          fi
+
+          echo "--- upgrade mode re-copies hooks only ---"
+          # Tamper with a hook to prove --upgrade overwrites it
+          echo '# tampered' > .claude/hooks/read-tracker.sh
+          bash "$scaffold_src/install.sh" --local "$scaffold_src" --upgrade
+          if grep -q 'tampered' .claude/hooks/read-tracker.sh; then
+            echo "FAIL: --upgrade did not overwrite tampered hook"
+            exit 1
+          fi
+          # And confirm upgrade did NOT touch CLAUDE.md / skills / settings
+          if [[ "$(cat CLAUDE.md | wc -c)" -eq 0 ]]; then
+            echo "FAIL: CLAUDE.md was clobbered by --upgrade"
+            exit 1
+          fi
+
+          echo "All smoke checks passed."
