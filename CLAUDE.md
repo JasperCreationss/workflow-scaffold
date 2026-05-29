@@ -29,14 +29,34 @@ This is the source repo for `workflow-scaffold`, a portable Claude Code workflow
 
 ## Testing
 
-No automated test suite yet. Manual flow:
+Two layers:
 
-1. `mkdir /tmp/scaffold-test && cd /tmp/scaffold-test`
-2. `git init` (so the sanity check passes)
-3. `bash /path/to/workflow-scaffold/install.sh --local /path/to/workflow-scaffold`
-4. Verify `.claude/` structure and `CLAUDE.md` at root
-5. Run again — verify `skip` lines for every file (idempotency)
-6. Modify `.claude/settings.json`, run again — verify `.scaffold-baseline` sidecar is written
+- **CI** (`.github/workflows/test.yml`) — runs on every push to `main` and every PR. Two jobs:
+  - `hook-tests` — runs every `scaffold/hooks/**/*.test.sh` under grouped logs. Drop a new `<name>.test.sh` next to a new hook and it's picked up automatically.
+  - `install-smoke` — fresh install via `install.sh --local`, asserts the expected file set landed with exec bits and the wired matchers, reruns and fails on any non-`skip` line, then tampers a hook + reruns with `--upgrade` to prove scope.
+- **Manual flow** (for local iteration before pushing):
+  1. `mkdir /tmp/scaffold-test && cd /tmp/scaffold-test`
+  2. `git init` (so the sanity check passes)
+  3. `bash /path/to/workflow-scaffold/install.sh --local /path/to/workflow-scaffold`
+  4. Verify `.claude/` structure and `CLAUDE.md` at root
+  5. Run again — verify `skip` lines for every file (idempotency)
+  6. Modify `.claude/settings.json`, run again — verify `.scaffold-baseline` sidecar is written
+
+## Review gate
+
+Every `feat/` and `fix/` PR runs through a three-reviewer pass before merge. Exempt: pure `docs/` PRs and one-line cosmetic fixes.
+
+The three reviewers, in parallel:
+
+- **`security-auditor`** — bash safety (quoting, IFS, regex/glob injection, path traversal in hook stdin), installer supply-chain surface (curl-pipe-bash, `--ref` pinning, action SHA pinning), hook contract (stdin handling, exit-code discipline, info disclosure via stderr).
+- **`senior-dev-auditor`** — correctness against docstring claims, idempotency / `--upgrade` scope, CI workflow assertions actually proving what they say, portability across the README's supported matrix (Linux + macOS stock Bash 3.2 + WSL).
+- **`codex review --base main`** — independent model (GPT-5-based) for diversity. Different training, different blind spots than the Claude pair.
+
+**Codex reviews, Claude fixes.** Codex is the adversarial second opinion; Claude decides what's real and edits. Don't let two models fight over style.
+
+**Adapt prompts to the scaffold's stack** — the auditor agents originated in lynxnsw-dev with Hono/tRPC/Mantine-specific checks. When invoking them here, scope to bash + GitHub Actions concerns and explicitly exclude Node/TS/SQL findings.
+
+Treat findings as signal: investigate every flag, dismiss only with a written reason. The scaffold has no human second reviewer; this gate is the backstop.
 
 ## Don't
 
