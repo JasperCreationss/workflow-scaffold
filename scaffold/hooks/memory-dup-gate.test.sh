@@ -109,6 +109,23 @@ assert_rc "metachar filename -> safe + still blocks" 2 \
 echo "1700000000 $MEM/anything.md" > "$TMP/.claude/read-files.log"
 assert_rc "traversal session_id -> rejected, still blocks" 2 Write "$NEWDUP" ".."
 
+# 12. SUBSTRING SCOPING: a read of an UNRELATED dir whose path contains
+#     "$mem_dir" as a substring (e.g. "<mem_dir>_backup/<file>") must NOT warm
+#     the gate. The trailing-slash needle in the gate's grep enforces a
+#     directory boundary so /memory_backup/ no longer false-warms /memory/.
+mkdir -p "$TMP/.claude/tmp/sessions/sess-bkup"
+echo "1700000000 ${MEM}_backup/feedback_resend_email.md" \
+    > "$TMP/.claude/tmp/sessions/sess-bkup/read-files.log"
+assert_rc "sibling-dir substring read -> still blocks" 2 Write "$NEWDUP" sess-bkup
+
+# 13. CAPITALIZED PREFIX: a new memory whose name starts with a capitalized
+#     type prefix (Feedback_) must have that prefix stripped before tokens are
+#     derived. Without the lowercase-before-strip order, "Feedback" would land
+#     as a token after stop-wording fails on it, and the gate's keyword set
+#     would be wrong. Block here proves the keyword "board" still surfaces.
+assert_rc "capitalized prefix stripped -> still blocks on real overlap" 2 \
+    Write "$MEM/Feedback_decide_BOARD_status.md" sess-cold
+
 echo
 echo "passed: $pass  failed: $fail"
 [[ $fail -eq 0 ]]

@@ -60,15 +60,19 @@ read_log=""
 if [[ "$session_id" =~ ^[A-Za-z0-9_-]+$ ]]; then
     read_log="$CLAUDE_PROJECT_DIR/.claude/tmp/sessions/$session_id/read-files.log"
 fi
-if [[ -n "$read_log" && -f "$read_log" ]] && grep -qF "$mem_dir" "$read_log" 2>/dev/null; then
+# Trailing slash on the needle enforces a directory boundary — a read of
+# .../memory_backup/foo.md must NOT warm the gate for .../memory/.
+if [[ -n "$read_log" && -f "$read_log" ]] && grep -qF "$mem_dir/" "$read_log" 2>/dev/null; then
     exit 0
 fi
 
 # --- Derive keyword tokens from the proposed filename ---
+# Lowercase BEFORE prefix-strip so capitalized prefixes (Feedback_, Project_,
+# ...) are also stripped, not just lowercase ones.
 stem="${base%.md}"
+stem=$(printf '%s' "$stem" | tr '[:upper:]' '[:lower:]')
 stem="${stem#feedback_}"; stem="${stem#project_}"
 stem="${stem#reference_}"; stem="${stem#user_}"
-stem="${stem,,}"
 # Structural type words (feedback/project/reference/user) are never dedup
 # signals — drop them along with generic glue words.
 stop=" feedback project reference user your yourself myself means dont when always never with that this from into using also more than have been ours them they "
@@ -87,15 +91,17 @@ done
 # but not "onboarding"). Substring test on normalized words, not regex, so a
 # token can never be interpreted as a pattern. A hit in the filename weighs 2
 # (strong dedup signal); a hit only in the description *value* weighs 1.
-declare -A score
+#
+# Bash 3.2 compatible: no `declare -A`, no `${var,,}` — macOS stock /bin/bash
+# is 3.2 and the README lists macOS as supported.
+scored=""        # accumulator: lines of "<count> <basename>"
 shopt -s nullglob
 for f in "$mem_dir"/*.md; do
     bn="$(basename "$f")"
     [[ "$bn" == "MEMORY.md" ]] && continue
-    name_lc="${bn%.md}"; name_lc="${name_lc,,}"
-    desc_lc="$(grep -m1 -i '^description:' "$f" 2>/dev/null)"
+    name_lc=$(printf '%s' "${bn%.md}" | tr '[:upper:]' '[:lower:]')
+    desc_lc=$(grep -m1 -i '^description:' "$f" 2>/dev/null | tr '[:upper:]' '[:lower:]')
     desc_lc="${desc_lc#*:}"       # drop the "description:" key, keep the value
-    desc_lc="${desc_lc,,}"
     name_w=" ${name_lc//[^a-z0-9]/ } "   # space-delimited words for whole-word test
     desc_w=" ${desc_lc//[^a-z0-9]/ } "
     n=0
@@ -106,13 +112,13 @@ for f in "$mem_dir"/*.md; do
             n=$((n + 1))
         fi
     done
-    [[ $n -gt 0 ]] && score["$f"]=$n
+    [[ $n -gt 0 ]] && scored+="$n $bn"$'\n'
 done
-[[ ${#score[@]} -gt 0 ]] || exit 0   # nothing overlaps -> genuinely novel, allow
+[[ -z "$scored" ]] && exit 0   # nothing overlaps -> genuinely novel, allow
 
 # --- Build the block message: top matches by overlap score ---
-matches="$(for f in "${!score[@]}"; do echo "${score[$f]} $(basename "$f")"; done | sort -rn | head -5)"
-top="$(echo "$matches" | head -1 | cut -d' ' -f2-)"
+matches=$(printf '%s' "$scored" | sort -rn | head -5)
+top=$(printf '%s\n' "$matches" | head -1 | cut -d' ' -f2-)
 
 {
     echo "[memory-gate] New memory overlaps existing ones — check before creating a duplicate."
