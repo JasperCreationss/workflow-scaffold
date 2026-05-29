@@ -34,10 +34,30 @@ jobs:
           fi
           jq --version
 
-      - name: Show bash version
-        run: bash --version
+      - name: Pin bash interpreter for tests
+        id: pin-bash
+        run: |
+          # On macOS-latest, /bin/bash is the stock Apple Bash 3.2 — what we
+          # need to exercise — while `bash` on PATH typically resolves to
+          # Homebrew 5.x. On Linux, plain `bash` is fine (5.x).
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            BASH_BIN=/bin/bash
+            major=$("$BASH_BIN" -c 'echo $BASH_VERSINFO')
+            if [[ "$major" != "3" ]]; then
+              echo "ERROR: expected stock /bin/bash 3.x on macos-latest to prove Bash 3.2 compat; got $major" >&2
+              "$BASH_BIN" --version >&2
+              exit 1
+            fi
+          else
+            BASH_BIN=bash
+          fi
+          echo "BASH_BIN=$BASH_BIN" >> "$GITHUB_ENV"
+          echo "Using $BASH_BIN:"
+          "$BASH_BIN" --version
 
       - name: Run all hook test suites
+        env:
+          BASH: ${{ env.BASH_BIN }}
         run: |
           shopt -s nullglob
           failed=0
@@ -48,7 +68,7 @@ jobs:
           fi
           for t in "${tests[@]}"; do
             echo "::group::$t"
-            bash "$t" || failed=1
+            "$BASH" "$t" || failed=1
             echo "::endgroup::"
           done
           exit $failed

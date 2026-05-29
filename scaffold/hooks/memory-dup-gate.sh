@@ -98,6 +98,11 @@ scored=""        # accumulator: lines of "<count> <basename>"
 shopt -s nullglob
 for f in "$mem_dir"/*.md; do
     bn="$(basename "$f")"
+    # POSIX permits \n/\r in filenames; strip them so a maliciously-named
+    # memory file can't inject a forged "<count> <name>" record into the
+    # accumulator and steer the user-facing top-match line.
+    bn="${bn//$'\n'/_}"
+    bn="${bn//$'\r'/_}"
     [[ "$bn" == "MEMORY.md" ]] && continue
     name_lc=$(printf '%s' "${bn%.md}" | tr '[:upper:]' '[:lower:]')
     desc_lc=$(grep -m1 -i '^description:' "$f" 2>/dev/null | tr '[:upper:]' '[:lower:]')
