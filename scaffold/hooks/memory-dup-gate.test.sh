@@ -9,6 +9,9 @@
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="$HERE/memory-dup-gate.sh"
+# Honor $BASH so CI can pin macos-latest to /bin/bash (3.2) and prove that
+# the hook actually runs under the oldest supported interpreter.
+BASH_BIN="${BASH:-bash}"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -44,7 +47,7 @@ mkjson() { jq -nc --arg t "$1" --arg f "$2" --arg s "$3" \
 assert_rc() {
     local label="$1" exp="$2"; shift 2
     local err; err="$(mktemp)"
-    printf '%s' "$(mkjson "$1" "$2" "$3")" | bash "$HOOK" 2>"$err"
+    printf '%s' "$(mkjson "$1" "$2" "$3")" | "$BASH_BIN" "$HOOK" 2>"$err"
     local rc=$?
     LAST_ERR="$(cat "$err")"; rm -f "$err"
     if [[ "$rc" == "$exp" ]]; then
@@ -120,11 +123,42 @@ assert_rc "sibling-dir substring read -> still blocks" 2 Write "$NEWDUP" sess-bk
 
 # 13. CAPITALIZED PREFIX: a new memory whose name starts with a capitalized
 #     type prefix (Feedback_) must have that prefix stripped before tokens are
-#     derived. Without the lowercase-before-strip order, "Feedback" would land
-#     as a token after stop-wording fails on it, and the gate's keyword set
-#     would be wrong. Block here proves the keyword "board" still surfaces.
+#     derived. With the lowercase-before-strip order, "Feedback_" becomes
+#     "feedback_" and the prefix strip fires. Block here proves the keyword
+#     "board" still surfaces. (Note: the OLD strip-then-lowercase order also
+#     happened to block this case because the stop list catches the leftover
+#     "feedback" token after lowercase — so the reorder is a clarity cleanup,
+#     not a correctness fix in isolation. See PR description.)
 assert_rc "capitalized prefix stripped -> still blocks on real overlap" 2 \
     Write "$MEM/Feedback_decide_BOARD_status.md" sess-cold
+
+# 14. NEWLINE INJECTION: a maliciously-named memory file containing an
+#     embedded newline must NOT inject a fake "<count> <name>" record into
+#     the accumulator. Without sanitization, sort -rn would put the forged
+#     line at the top and the block message would print "Read $mem_dir/<fake>".
+nasty="$MEM/$(printf 'feedback_legit\n9999 fake_top')_overlap_board.md"
+cat > "$nasty" <<'EOF'
+---
+name: nasty
+description: overlap on board
+---
+body
+EOF
+err="$(mktemp)"
+printf '%s' "$(mkjson Write "$NEWDUP" sess-cold)" | "$BASH_BIN" "$HOOK" 2>"$err"
+rc=$?
+LAST_ERR="$(cat "$err")"; rm -f "$err"
+# Injection signature is a leading score of "9999" in the matches block — the
+# forged record. After sanitization the newline becomes _, the file appears
+# as ONE record with its real overlap score (e.g. "2 feedback_legit_9999 …").
+# The sanitized form may still contain "9999" as a substring of the basename;
+# what must NOT appear is "9999" as the leading score on its own line.
+if [[ "$rc" == 2 ]] && ! grep -qE '^[[:space:]]+9999[[:space:]]' <<<"$LAST_ERR"; then
+    echo "ok   - newline-in-basename does not inject into block message (exit $rc)"; pass=$((pass + 1))
+else
+    echo "FAIL - newline injection succeeded:"; echo "$LAST_ERR" | sed 's/^/      /'; fail=$((fail + 1))
+fi
+rm -f "$nasty"
 
 echo
 echo "passed: $pass  failed: $fail"
