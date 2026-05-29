@@ -30,8 +30,9 @@ bash /path/to/workflow-scaffold/install.sh --local /path/to/workflow-scaffold
 
 The installer is **non-destructive** — it only adds files that don't already exist:
 
-- `.claude/settings.json` — minimal hooks baseline (read-tracker enabled)
+- `.claude/settings.json` — minimal hooks baseline (read-tracker + memory-dup-gate enabled)
 - `.claude/hooks/read-tracker.sh` — logs Read tool calls per session
+- `.claude/hooks/memory-dup-gate.sh` — blocks creating a new auto-memory file that overlaps an existing one until the existing one has been Read
 - `.claude/hooks/optional/psql-gate.sh` — opt-in DB quick-reference gate
 - `.claude/skills/_bootstrap/SKILL.md` — the meta-skill (runs once, then archives itself)
 - `.claude/.gitignore` — ignores `tmp/`, `*.scaffold-baseline`, `*.proposed`
@@ -101,6 +102,8 @@ workflow-scaffold/
 │   ├── .gitignore
 │   ├── hooks/
 │   │   ├── read-tracker.sh
+│   │   ├── memory-dup-gate.sh
+│   │   ├── memory-dup-gate.test.sh
 │   │   └── optional/
 │   │       └── psql-gate.sh
 │   └── skills/
